@@ -4,13 +4,15 @@ import streamlit as st
 import subprocess
 import requests
 import speech_recognition as sr
-from googletrans import Translator
 from streamlit_webrtc import webrtc_streamer, AudioProcessorBase
 import av
+import asyncio
+import threading
+import time
 
 
 def generate_command(prompt):
-    api_key = "gemi_key"
+    api_key = "AIzaSyAbypriZKuJQS8ziFsdoOeV-92Vqvxhy5k"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
 
     headers = {"Content-Type": "application/json"}
@@ -88,17 +90,33 @@ def view_file(directory, name):
 class AudioProcessor(AudioProcessorBase):
     def __init__(self):
         self.recognizer = sr.Recognizer()
-        self.translator = Translator()
-
+        self.buffer = []
+        self.last_process_time = 0
+        
     def recv(self, frame: av.AudioFrame):
+        import time
+        current_time = time.time()
+        
+        # Add frame data to buffer
         audio_data = frame.to_ndarray().flatten().astype('int16')
-        with sr.AudioData(audio_data.tobytes(), 16000, 2) as source:
-            try:
-                text = self.recognizer.recognize_google(source)
-                translated = self.translator.translate(text, dest="en").text
-                st.session_state["speech_prompt"] = translated
-            except Exception as e:
-                st.session_state["speech_prompt"] = f"Error: {str(e)}"
+        self.buffer.extend(audio_data)
+        
+        # Process only every 1 second to avoid overloading
+        if current_time - self.last_process_time > 1.0 and len(self.buffer) > 16000:
+            self.last_process_time = current_time
+            
+            # Create AudioData from buffer
+            audio_bytes = bytes(bytearray(self.buffer))
+            self.buffer = []  # Clear buffer after processing
+            
+            with sr.AudioData(audio_bytes, 16000, 2) as source:
+                try:
+                    text = self.recognizer.recognize_google(source)
+                    st.session_state["speech_prompt"] = text
+                except Exception as e:
+                    # Only log errors, don't update the prompt
+                    print(f"Recognition error: {str(e)}")
+        
         return frame
 
 
@@ -112,24 +130,78 @@ if "speech_prompt" not in st.session_state:
 tab1, tab2 = st.tabs(["🧠 GenAI Shell", "📁 File Manager"])
 
 
+# Replace the voice input section in tab1 with this automated version
 with tab1:
-    st.subheader("🎙️ Speak or type your task (e.g., show files, check time)")
-    webrtc_streamer(
-        key="speech",
-        audio_processor_factory=AudioProcessor,
-        media_stream_constraints={"audio": True, "video": False},
-        async_processing=True,
-    )
-
-    prompt = st.text_input("Detected Prompt (editable):", st.session_state["speech_prompt"])
-
-    if st.button("Generate & Run Command"):
+    st.subheader("🎙️ Continuous Voice Command System")
+    
+    # Placeholders for displaying results
+    status_placeholder = st.empty()
+    command_placeholder = st.empty()
+    output_placeholder = st.empty()
+    
+    # Session state for controlling listening
+    if "listening" not in st.session_state:
+        st.session_state.listening = False
+        
+    def toggle_listening():
+        st.session_state.listening = not st.session_state.listening
+    
+    # Button to start/stop continuous listening
+    if st.session_state.listening:
+        if st.button("Stop Listening", on_click=toggle_listening):
+            pass
+        status_placeholder.info("Listening for commands... (speak and wait)")
+    else:
+        if st.button("Start Continuous Listening", on_click=toggle_listening):
+            pass
+        status_placeholder.info("Click the button above to start listening")
+    
+    # This will re-run the script periodically when listening is active
+    if st.session_state.listening:
+        # Process voice input
+        try:
+            recognizer = sr.Recognizer()
+            with sr.Microphone() as source:
+                recognizer.adjust_for_ambient_noise(source)
+                audio = recognizer.listen(source, timeout=5, phrase_time_limit=5)
+                
+            # Recognize speech
+            voice_text = recognizer.recognize_google(audio)
+            if voice_text:
+                status_placeholder.success(f"Detected: '{voice_text}'")
+                
+                # Generate and execute command
+                command = generate_command(voice_text)
+                command_placeholder.code(f"Executing command:\n{command}", language="bash")
+                
+                # Execute the command
+                result = subprocess.getoutput(command)
+                output_placeholder.text_area("Command Output:", result, height=200)
+                
+                # Brief pause to show results
+                time.sleep(2)
+                
+        except (sr.UnknownValueError, sr.WaitTimeoutError):
+            # Don't display anything for normal timeout/silence
+            pass
+        except Exception as e:
+            status_placeholder.error(f"Error: {str(e)}")
+            time.sleep(2)
+        
+        # Force a rerun to create a continuous listening loop
+        time.sleep(0.1)  # Short delay
+        st.rerun()
+    
+    # Still keep the text input for manual editing if needed
+    prompt = st.text_input("Manual command input:", st.session_state.get("speech_prompt", ""))
+    
+    if st.button("Generate & Run Manual Command"):
         if prompt:
-            with st.spinner("Thinking..."):
+            with st.spinner("Processing..."):
                 command = generate_command(prompt)
                 result = subprocess.getoutput(command)
-                st.code(f"Generated Command:\n{command}", language="bash")
-                st.text_area("Command Output:", result, height=200)
+                command_placeholder.code(f"Executed Command:\n{command}", language="bash")
+                output_placeholder.text_area("Command Output:", result, height=200)
 
 
 with tab2:
@@ -174,3 +246,5 @@ with tab2:
         if st.button("View File"):
             content = view_file(directory, view_name)
             st.text_area("File Content:", content, height=200)
+
+
