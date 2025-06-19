@@ -12,7 +12,7 @@ import time
 
 
 def generate_command(prompt):
-    api_key = "AIzaSyAbypriZKuJQS8ziFsdoOeV-92Vqvxhy5k"
+    api_key = "genKey"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
 
     headers = {"Content-Type": "application/json"}
